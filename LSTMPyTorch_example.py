@@ -18,14 +18,14 @@ torch.set_default_dtype(torch.float64)
 
 # Network
 learning_rate = 1e-3
-epochs = 500
+epochs = 1000
 input_size = 1
 output_size = 1
-sequence_length = 1
+sequence_length = 50
 hidden_size = 64
 
 # Training
-num_datapoints = 100
+num_datapoints = 1000
 test_size = 0.2
 num_train = int((1-test_size) * num_datapoints)
 
@@ -34,39 +34,46 @@ num_train = int((1-test_size) * num_datapoints)
 ######################
 df = pd.read_csv('./Pre-processed_data.csv')
 
-### Prepare data
+# Remove motor data from output (we don't want to predict motor commands)
 df_output = df.drop(['LMotor', 'RMotor'], 1)
-# One time series at a time (testing)
-df = df['XCoord']
-df_output = df
+df_output = df_output.drop(['YCoord', 'XOrient', 'YOrient'], 1)
+df = df_output
+
+input_size = len(df.columns)                    # recompute input and output size after the data is read
+output_size = len(df_output.columns)
 
 # Give a window of lenght sequence_length
-X = torch.zeros(sequence_length,0)
-for i in range(num_datapoints):
-    X = torch.cat((X, torch.tensor(df[i:i+sequence_length].values).view([-1,1])),1)
+X = torch.zeros(sequence_length,0,input_size)
+y = torch.zeros(sequence_length,0,output_size)
+for i in range(1,num_datapoints+1):
+    X = torch.cat((X, torch.tensor(df[i-1:i-1+sequence_length].values).view([sequence_length,1,input_size])),1)
+    y = torch.cat((y, torch.tensor(df_output[i:i+sequence_length].values).view([sequence_length,1,output_size])),1)
 
-X_train = X[:, :num_train]
-X_test = X[:, num_train:num_datapoints]
+X_train = X[:, :num_train, :]
+X_test = X[:, num_train:num_datapoints, :]
 
-y_train = torch.tensor(df_output[sequence_length:sequence_length+num_train].values)
-y_test = torch.tensor(df_output[sequence_length+num_train:num_datapoints+sequence_length].values)
+y_train = y[:, :num_train, :]
+y_test = y[:, num_train:num_datapoints, :]
 
-# Format for lstm method
+# Format input sets for pytorch lstm
 X_train = X_train.view([sequence_length, -1, input_size])
 X_test = X_test.view([sequence_length, -1, input_size])
 
-
+# Create lstm
 lstm = torch.nn.LSTM(input_size, hidden_size)
-
+# Create loss function
 loss_fn = torch.nn.MSELoss(size_average=False)
-
+# Choose optimisation method
 optimiser = torch.optim.Adam(lstm.parameters(), lr=learning_rate)
-
-hist = np.zeros(epochs)
+# Create array for saving training error
+hist = np.zeros(epochs+1)
 
 # Stick to Pytorch language in the future? batch_size = num_train
 
-for t in range(epochs):
+# Reduce dimensions to match output_size (to check)
+linear = torch.nn.Linear(hidden_size, output_size)
+
+for t in range(epochs+1):
     # Initialise hidden state
     # Don't do this if you want your LSTM to be stateful
     # lstm.hidden = lstm.init_hidden()
@@ -74,17 +81,9 @@ for t in range(epochs):
     # Forward pass
     lstm_out, lstm_hidden = lstm(X_train)
 
-    # Reduce dimensions to match output_size (to check)
-    linear = torch.nn.Linear(hidden_size, output_size)
+    y_pred = linear(lstm_out.view(sequence_length, num_train, -1))
 
-    # print(lstm_out.size())
-    # print(lstm_out[-1].view(num_train, -1).size())
-
-    y_pred = linear(lstm_out[-1].view(num_train, -1))
-
-    print(y_pred.view(-1), -y_train)
-
-    loss = loss_fn(y_pred.view(-1), -y_train)
+    loss = loss_fn(y_pred, y_train)
     if t % 100 == 0:
         print("Epoch ", t, "MSE: ", loss.item())
     hist[t] = loss.item()
@@ -98,44 +97,76 @@ for t in range(epochs):
     # Update parameters
     optimiser.step()
 
-# print(lstm_out.size())
-# print(y_pred.size())
-# print(y_train.size())
 
 #####################
-# Plot preds and performance
+# Test network
 #####################
-plt.figure()
-# plt.subplot(3,2,1)
-plt.plot(y_pred.detach().numpy(), label="Preds")
-plt.plot(y_train.detach().numpy(), label="Data")
+# X_test = torch.rand(10,num_datapoints-num_train,1)
+lstm_out_test, lstm_hidden_test = lstm(X_test)
+y_pred_test = linear(lstm_out_test[-1].view(num_datapoints-num_train, -1))
+
+#####################
+# Plot preds and performance (training and testing)
+#####################
+
+# Training
+plt.figure(figsize=(13,9))
+plt.suptitle('Training')
+plt.subplot(2,2,1)
+plt.plot(y_pred[0,:,0].detach().numpy(), label="Preds")
+plt.plot(y_train[0,:,0].detach().numpy(), label="Data")
+plt.title('XCoord')
 plt.legend()
-# plt.subplot(3,2,2)
-# plt.plot(lstm_out[:,0,1].detach().numpy(), label="Preds")
+# plt.subplot(2,2,2)
+# plt.plot(y_pred[:,1].detach().numpy(), label="Preds")
 # plt.plot(y_train[:,1].detach().numpy(), label="Data")
-# plt.subplot(3,2,3)
-# plt.plot(lstm_out[:,0,2].detach().numpy(), label="Preds")
-# plt.plot(y_train[:,2].detach().numpy(), label="Data")
-# plt.subplot(3,2,4)
-# plt.plot(lstm_out[:,0,3].detach().numpy(), label="Preds")
-# plt.plot(y_train[:,3].detach().numpy(), label="Data")
-# plt.subplot(3,2,5)
-# plt.plot(lstm_out[:,0,4].detach().numpy(), label="Preds")
-# # plt.plot(y_train[:,4].detach().numpy(), label="Data")
-# plt.subplot(3,2,6)
-# plt.plot(lstm_out[:,0,5].detach().numpy(), label="Preds")
-# # plt.plot(y_train[:,5].detach().numpy(), label="Data")
+# plt.title('YCoord')
 # plt.legend()
-
-plt.figure()
-# plt.subplot(3,2,1)
-plt.plot(y_train.detach().numpy(), label="Data")
-
-plt.figure()
-# plt.subplot(3,2,1)
-plt.plot(y_pred.detach().numpy(), label="Preds")
+# plt.subplot(2,2,3)
+# plt.plot(y_pred[:,2].detach().numpy(), label="Preds")
+# plt.plot(y_train[:,2].detach().numpy(), label="Data")
+# plt.title('XOrient')
+# plt.legend()
+# plt.subplot(2,2,4)
+# plt.plot(y_pred[:,3].detach().numpy(), label="Preds")
+# plt.plot(y_train[:,3].detach().numpy(), label="Data")
+# plt.title('YOrient')
+plt.legend()
 
 plt.figure()
 plt.plot(hist, label="Training loss")
 plt.legend()
+
+
+# Testing
+plt.figure(figsize=(13,9))
+plt.suptitle('Testing')
+plt.subplot(2,2,1)
+plt.plot(y_pred_test[:,0].detach().numpy(), label="Preds")
+plt.plot(y_test[0,:,0].detach().numpy(), label="Data")
+plt.title('XCoord')
+plt.legend()
+# plt.subplot(2,2,2)
+# plt.plot(y_pred_test[:,1].detach().numpy(), label="Preds")
+# plt.plot(y_test[:,1].detach().numpy(), label="Data")
+# plt.title('YCoord')
+# plt.legend()
+# plt.subplot(2,2,3)
+# plt.plot(y_pred_test[:,2].detach().numpy(), label="Preds")
+# plt.plot(y_test[:,2].detach().numpy(), label="Data")
+# plt.title('XOrient')
+# plt.legend()
+# plt.subplot(2,2,4)
+# plt.plot(y_pred_test[:,3].detach().numpy(), label="Preds")
+# plt.plot(y_test[:,3].detach().numpy(), label="Data")
+# plt.title('YOrient')
+# plt.legend()
+
+# plt.figure()
+# plt.plot(X[-1].detach().numpy())
+# plt.plot(X_train[-1].detach().numpy())
+# plt.plot(X_test[-1].detach().numpy())
+# a=torch.cat((X_train,X_test),1)
+# plt.plot(a[-1].detach().numpy())
+
 plt.show()
