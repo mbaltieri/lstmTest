@@ -19,10 +19,10 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # Network
 learning_rate = 1e-3
-epochs = 50
+epochs = 500
 input_size = 1
 output_size = 1
-sequence_length = 3
+sequence_length = 10
 hidden_size = 64
 
 # Training
@@ -33,13 +33,12 @@ num_train = int((1-test_size) * num_datapoints)
 #####################
 # Read data from file
 ######################
-# df = pd.read_csv('https://raw.githubusercontent.com/mbaltieri/lstmTest/master/Pre-processed_data.csv')
-df = pd.read_csv('./Pre-processed_data.csv')
+df = pd.read_csv('https://raw.githubusercontent.com/mbaltieri/lstmTest/master/Pre-processed_data.csv')
+df = pd.read_csv('https://raw.githubusercontent.com/mbaltieri/lstmTest/master/Pre-processed_data_subsampled.csv')
+# df = pd.read_csv('./Pre-processed_data.csv')
 
 # Remove motor data from output (we don't want to predict motor commands)
 df_output = df.drop(['LMotor', 'RMotor'], 1)
-# df_output = df_output.drop(['YCoord', 'XOrient', 'YOrient'], 1)
-# df = df_output
 
 input_size = len(df.columns)                    # recompute input and output size after the data is read
 output_size = len(df_output.columns)
@@ -64,7 +63,7 @@ X_test = X_test.view([sequence_length, -1, input_size])
 # Create lstm
 model = torch.nn.LSTM(input_size, hidden_size).to(device)
 # Create loss function
-loss_fn = torch.nn.MSELoss(size_average=False)
+loss_fn = torch.nn.MSELoss(reduction='sum')
 # Choose optimisation method
 optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
 # Create array for saving training error
@@ -106,20 +105,27 @@ for t in range(epochs+1):
 #####################
 # Test network
 #####################
+
+# Create array for saving training error
+hist_test = np.zeros(num_datapoints-num_train+1)
+
 first_sequence = X_test[:,0,:].view([sequence_length, 1, input_size])
 
 lstm_pred = torch.zeros(sequence_length,num_datapoints-num_train,input_size, device=device)
 
 lstm_out_test, lstm_hidden_test = model(first_sequence)
-lstm_pred[:,0,:output_size] = linear(lstm_out_test.view(sequence_length, 1, -1))
-lstm_pred[:,0,:] = torch.cat((lstm_pred, X_test[:,0,output_size:].view([sequence_length, 1, -1])),2)
-for i in range(num_datapoints-num_train):
-    lstm_out_test, lstm_hidden_test = model(lstm_pred[:,i,:])
-    lstm_pred[:,i+1,:output_size] = linear(lstm_out_test.view(sequence_length, 1, -1))
-    lstm_pred[:,i+1,:] = torch.cat((lstm_pred, X_test[:,i+1,output_size:].view([sequence_length, 1, -1])),2)
+lstm_pred[:,0,:output_size] = linear(lstm_out_test.view(sequence_length, -1))
+lstm_pred[:,0,output_size:] = X_test[:,1,output_size:].view([sequence_length, -1])
+for i in range(1,num_datapoints-num_train-1):
+    lstm_out_test, lstm_hidden_test = model(lstm_pred[:,i,:].view(sequence_length, 1, -1))
+    lstm_pred[:,i+1,:output_size] = linear(lstm_out_test.view(sequence_length, -1))
+    lstm_pred[:,i+1,output_size:] = X_test[:,i+1,output_size:].view([sequence_length, -1])
 
-lstm_out_test, lstm_hidden_test = model(X_test)
-y_pred_test = linear(lstm_out_test[-1].view(num_datapoints-num_train, -1))
+    loss_test = loss_fn(lstm_pred[:,i+1,:output_size], X_test[:,i+1,:output_size])
+    hist_test[i] = loss_test.item()
+
+# lstm_out_test, lstm_hidden_test = model(X_test)
+# y_pred_test = linear(lstm_out_test[-1].view(num_datapoints-num_train, -1))
 
 #####################
 # Plot preds and performance (training and testing)
@@ -160,37 +166,32 @@ plt.figure(figsize=(13,9))
 plt.suptitle('Testing')
 plt.subplot(2,2,1)
 plt.plot(lstm_pred[0,:,0].cpu().detach().numpy(), label="Preds2")
-plt.plot(y_pred_test[:,0].cpu().detach().numpy(), label="Preds")
-# plt.plot(y_test[0,:,0].cpu().detach().numpy(), label="Data")
+# plt.plot(y_pred_test[:,0].cpu().detach().numpy(), label="Preds")
+plt.plot(y_test[0,:,0].cpu().detach().numpy(), label="Data")
 plt.title('XCoord')
 plt.legend()
 plt.subplot(2,2,2)
-plt.plot(y_pred_test[:,1].cpu().detach().numpy(), label="Preds")
+plt.plot(lstm_pred[0,:,1].cpu().detach().numpy(), label="Preds2")
+# plt.plot(y_pred_test[:,1].cpu().detach().numpy(), label="Preds")
 plt.plot(y_test[0,:,1].detach().numpy(), label="Data")
 plt.title('YCoord')
 plt.legend()
 plt.subplot(2,2,3)
-plt.plot(y_pred_test[:,2].cpu().detach().numpy(), label="Preds")
+plt.plot(lstm_pred[0,:,2].cpu().detach().numpy(), label="Preds2")
+# plt.plot(y_pred_test[:,2].cpu().detach().numpy(), label="Preds")
 plt.plot(y_test[0,:,2].detach().numpy(), label="Data")
 plt.title('XOrient')
 plt.legend()
 plt.subplot(2,2,4)
-plt.plot(y_pred_test[:,3].cpu().detach().numpy(), label="Preds")
+plt.plot(lstm_pred[0,:,3].cpu().detach().numpy(), label="Preds2")
+# plt.plot(y_pred_test[:,3].cpu().detach().numpy(), label="Preds")
 plt.plot(y_test[0,:,3].detach().numpy(), label="Data")
 plt.title('YOrient')
 plt.legend()
 
-# plt.figure()
-# plt.plot(X[-1].detach().numpy())
-# plt.plot(X_train[-1].detach().numpy())
-# plt.plot(X_test[-1].detach().numpy())
-# a=torch.cat((X_train,X_test),1)
-# plt.plot(a[-1].detach().numpy())
-
 plt.figure()
-plt.plot(lstm_pred[0,:,0].cpu().detach().numpy(), label="Preds2")
-plt.figure()
-plt.plot(y_pred_test[:,0].cpu().detach().numpy(), label="Preds")
+plt.plot(hist_test[:-2], label="Testing loss")
+plt.legend()
 
 plt.ion()
 plt.show()
